@@ -18,7 +18,7 @@ final class Fixtures {
         byte[] k = new byte[32];
         java.util.Arrays.fill(k, (byte) 9);
         return new ArchivosProps(System.getProperty("java.io.tmpdir") + "/sila-test-docs", Base64.getEncoder().encodeToString(k),
-                null, "sistema.archivos", new Empresa("LLANOLAT SAS", "900.123.456-7", "Calle 1 # 2-3", "3001234567"),
+                null, "sistema.archivos", new Empresa("LLANOLAT SAS", "900.123.456-7", "Calle 1 # 2-3", "3001234567", null),
                 new Clamav(antivirus, "127.0.0.1", puertoClamav, null, Duration.ofSeconds(2)),
                 new Drive(null, null, null, null, "a", "b", "c", "SILA-respaldo", Duration.ofMinutes(1)));
     }

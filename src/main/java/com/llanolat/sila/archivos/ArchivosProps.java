@@ -26,8 +26,8 @@ public record ArchivosProps(
         @DefaultValue Drive drive
 ) {
 
-    /** Encabezado de los PDF. Solo el nombre es obligatorio. */
-    public record Empresa(@DefaultValue("LLANOLAT") String nombre, String nit, String direccion, String telefono) {}
+    /** Encabezado de los PDF. Solo el nombre es obligatorio. {@code logo}: ruta a un PNG o JPG (opcional; sin el, iniciales). */
+    public record Empresa(@DefaultValue("LLANOLAT") String nombre, String nit, String direccion, String telefono, String logo) {}
 
     /**
      * Antivirus ClamAV (servicio clamd). Con socket se usa el socket Unix; si no, host:puerto.

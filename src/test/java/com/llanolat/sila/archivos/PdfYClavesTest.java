@@ -50,9 +50,9 @@ class PdfYClavesTest {
         byte[] pdf = generador.generar(venta(3, "VIGENTE"), null, ZonedDateTime.now());
         assertThat(ValidadorSubida.detectarMime(pdf)).isEqualTo("application/pdf");
         String t = texto(pdf);
-        assertThat(t).contains("Comprobante de venta").contains("VENTA #65").contains("LLANOLAT SAS")
+        assertThat(t).contains("VENTA").contains("CONDICIONES Y FORMA DE PAGO").contains("Gracias").contains("VENTA #65").contains("LLANOLAT SAS")
                 .contains("$ 1.250.000").contains("Queso campesino 1").contains("Subtotal").contains("IVA")
-                .contains("No es factura electronica").doesNotContain("ANULADO");
+                .contains("No es factura electrónica").doesNotContain("ANULADO");
     }
 
     @Test
@@ -61,7 +61,7 @@ class PdfYClavesTest {
         try (PDDocument d = Loader.loadPDF(new RandomAccessReadBuffer(pdf))) {
             assertThat(d.getNumberOfPages()).isGreaterThan(2);
         }
-        assertThat(texto(pdf)).contains("Pagina 1 de").contains("(continuacion)").contains("TOTAL");
+        assertThat(texto(pdf)).contains("Página 1 de").contains("(continuación)").contains("TOTAL");
     }
 
     @Test

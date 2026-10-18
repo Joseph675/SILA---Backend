@@ -18,5 +18,9 @@ export SILA_COOKIE_SECURE="${SILA_COOKIE_SECURE:-false}"
 # Origenes del dashboard permitidos (CORS y anti-CSRF), separados por coma. Con ngrok el navegador manda como
 # Origin la URL de ngrok: pasala asi (sin barra final):  SILA_NGROK=https://tu-dominio.ngrok-free.dev ./arrancar.sh
 export SILA_CORS_ORIGENES="http://localhost:4200${SILA_NGROK:+,$SILA_NGROK}"
+# Logo de los PDF: si existe ~/sila_llanolat/logo.png (o .jpg), se usa. Se lee al arrancar.
+for LOGO in "$HOME/sila_llanolat/logo.png" "$HOME/sila_llanolat/logo.jpg"; do
+  [ -z "${SILA_EMPRESA_LOGO:-}" ] && [ -f "$LOGO" ] && export SILA_EMPRESA_LOGO="$LOGO"
+done
 cd "$(dirname "$0")"
 exec ./mvnw spring-boot:run

@@ -7,6 +7,8 @@ import com.llanolat.sila.comprobantes.Comprobantes.Pago;
 import com.llanolat.sila.infra.Fechas;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.math.BigDecimal;
 import java.text.DecimalFormat;
 import java.text.DecimalFormatSymbols;
@@ -27,8 +29,11 @@ import org.apache.pdfbox.pdmodel.common.PDRectangle;
 import org.apache.pdfbox.pdmodel.font.PDFont;
 import org.apache.pdfbox.pdmodel.font.PDType1Font;
 import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
+import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject;
 import org.apache.pdfbox.pdmodel.graphics.state.PDExtendedGraphicsState;
 import org.apache.pdfbox.util.Matrix;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
@@ -46,16 +51,42 @@ public class GeneradorPdf {
     private static final float M = 42f;                       // margen
     private static final float ANCHO = A4.getWidth() - 2 * M;
     private static final float PIE = 54f;                     // alto reservado abajo
-    private static final float[] AZUL = {23 / 255f, 64 / 255f, 91 / 255f};
+    private static final float[] AZUL = {31 / 255f, 42 / 255f, 90 / 255f};
+    private static final float[] ACENTO = {214 / 255f, 82 / 255f, 50 / 255f};
+    private static final float[] NEGRO = {0.12f, 0.12f, 0.14f};
+    private static final float[] GRIS_LOGO = {168 / 255f, 168 / 255f, 172 / 255f};
     private static final float[] ROJO = {176 / 255f, 32 / 255f, 32 / 255f};
     private static final float[] GRIS_TEXTO = {90 / 255f, 98 / 255f, 106 / 255f};
-    private static final float[] ZEBRA = {244 / 255f, 246 / 255f, 248 / 255f};
     private static final DateTimeFormatter FECHA = DateTimeFormatter.ofPattern("dd/MM/yyyy");
     private static final DateTimeFormatter FECHA_HORA = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm");
 
-    private final ArchivosProps.Empresa empresa;
+    private static final Logger log = LoggerFactory.getLogger(GeneradorPdf.class);
 
-    public GeneradorPdf(ArchivosProps props) { this.empresa = props.empresa(); }
+    private final ArchivosProps.Empresa empresa;
+    /** Bytes del logo (PNG o JPG), leidos una vez al arrancar; null = circulo con las iniciales. */
+    private final byte[] logo;
+
+    public GeneradorPdf(ArchivosProps props) {
+        this.empresa = props.empresa();
+        this.logo = leerLogo(empresa.logo());
+    }
+
+    private static byte[] leerLogo(String ruta) {
+        if (!hay(ruta)) return null;
+        try {
+            byte[] b = Files.readAllBytes(Path.of(ruta));
+            boolean png = b.length > 8 && (b[0] & 0xff) == 0x89 && b[1] == 'P' && b[2] == 'N' && b[3] == 'G';
+            boolean jpg = b.length > 3 && (b[0] & 0xff) == 0xFF && (b[1] & 0xff) == 0xD8;
+            if ((!png && !jpg) || b.length > 2_000_000) {
+                log.warn("El logo {} no es PNG/JPG o pesa mas de 2 MB: se usan las iniciales.", ruta);
+                return null;
+            }
+            return b;
+        } catch (IOException e) {
+            log.warn("No se pudo leer el logo {}: se usan las iniciales.", ruta);
+            return null;
+        }
+    }
 
     public byte[] generar(Detalle d, Anulacion anulacion, ZonedDateTime emision) {
         try (PDDocument doc = new PDDocument()) {
@@ -78,6 +109,8 @@ public class GeneradorPdf {
         final ZonedDateTime emision;
         final PDFont normal = new PDType1Font(Standard14Fonts.FontName.HELVETICA);
         final PDFont negrita = new PDType1Font(Standard14Fonts.FontName.HELVETICA_BOLD);
+        final PDFont titular = negrita;
+        final PDFont cursiva = new PDType1Font(Standard14Fonts.FontName.TIMES_BOLD_ITALIC);
         final List<PDPage> paginas = new ArrayList<>();
         PDPageContentStream cs;
         float y;
@@ -92,10 +125,9 @@ public class GeneradorPdf {
 
         void dibujar() throws IOException {
             nuevaPagina(true);
-            datosGenerales();
             tabla();
             totales();
-            pagos();
+            cierre();
             if (cs != null) cs.close();
             cs = null;
             decorarPaginas();
@@ -113,46 +145,66 @@ public class GeneradorPdf {
             if (primera) {
                 encabezado();
             } else {
-                relleno(AZUL);
-                cs.addRect(0, A4.getHeight() - 26, A4.getWidth(), 26);
-                cs.fill();
-                texto(negrita, 10, M, A4.getHeight() - 17, c.numero() + (anulacion != null ? "  -  ANULADO" : "") + "  (continuacion)", new float[] {1, 1, 1});
-                y = A4.getHeight() - 52;
+                texto(titular, 14, M, A4.getHeight() - 40, limpiar(c.numero() + (anulacion != null ? "  -  ANULADO" : "") + "  (continuaci\u00f3n)"), principal());
+                acento(A4.getHeight() - 50);
+                y = A4.getHeight() - 74;
             }
         }
 
-        void encabezado() throws IOException {
-            float alto = 78;
-            relleno(anulacion != null ? ROJO : AZUL);
-            cs.addRect(0, A4.getHeight() - alto, A4.getWidth(), alto);
-            cs.fill();
-            float[] blanco = {1, 1, 1};
-            texto(negrita, 20, M, A4.getHeight() - 34, limpiar(empresa.nombre()), blanco);
-            List<String> datos = new ArrayList<>();
-            if (hay(empresa.nit())) datos.add("NIT " + empresa.nit());
-            if (hay(empresa.direccion())) datos.add(empresa.direccion());
-            if (hay(empresa.telefono())) datos.add("Tel. " + empresa.telefono());
-            if (!datos.isEmpty()) texto(normal, 8.5f, M, A4.getHeight() - 50, limpiar(String.join("   |   ", datos)), blanco);
-            String etiqueta = anulacion != null ? "COMPROBANTE ANULADO" : "COMPROBANTE INTERNO";
-            derecha(negrita, 9, A4.getWidth() - M, A4.getHeight() - 34, etiqueta, blanco);
-            derecha(normal, 8, A4.getWidth() - M, A4.getHeight() - 48, "Documento interno. No es factura electronica.", blanco);
+        float[] principal() { return anulacion != null ? ROJO : AZUL; }
 
-            y = A4.getHeight() - alto - 34;
-            texto(negrita, 22, M, y, limpiar(titulo()), anulacion != null ? ROJO : AZUL);
-            y -= 18;
-            texto(normal, 10, M, y, limpiar(c.numero()), GRIS_TEXTO);
-            y -= 26;
+        void encabezado() throws IOException {
+            float tope = A4.getHeight() - M;
+            texto(titular, 36, M, tope - 34, limpiar(tituloCorto()), principal());
+            logo(A4.getWidth() - M - 32, tope - 26, 32);
+            float yy = tope - 58;
+            texto(negrita, 10.5f, M, yy, limpiar(empresa.nombre()), NEGRO);
+            for (String dato : new String[] {hay(empresa.nit()) ? "NIT " + empresa.nit() : null, empresa.direccion(),
+                                             hay(empresa.telefono()) ? "Tel. " + empresa.telefono() : null}) {
+                if (!hay(dato)) continue;
+                yy -= 13;
+                texto(normal, 9.5f, M, yy, limpiar(dato), NEGRO);
+            }
+            y = Math.min(yy, tope - 98) - 30;
+            datosGenerales();
             if (anulacion != null) cuadroAnulacion();
+        }
+
+        /** Logo de la empresa (PNG o JPG configurado) dentro de un circulo; sin logo, el circulo lleva las iniciales. */
+        void logo(float cx, float cy, float r) throws IOException {
+            if (logo != null) {
+                PDImageXObject img = PDImageXObject.createFromByteArray(doc, logo, "logo");
+                float escala = Math.min(2 * r / img.getWidth(), 2 * r / img.getHeight());
+                float w = img.getWidth() * escala, h = img.getHeight() * escala;
+                cs.drawImage(img, cx - w / 2, cy - h / 2, w, h);
+                return;
+            }
+            relleno(GRIS_LOGO);
+            circulo(cx, cy, r);
+            cs.fill();
+            String ini = iniciales(empresa.nombre());
+            float tam = ini.length() > 2 ? 15 : 19;
+            texto(negrita, tam, cx - ancho(negrita, tam, ini) / 2, cy - tam * 0.35f, ini, new float[] {1, 1, 1});
+        }
+
+        void circulo(float cx, float cy, float r) throws IOException {
+            float k = 0.5523f * r;
+            cs.moveTo(cx + r, cy);
+            cs.curveTo(cx + r, cy + k, cx + k, cy + r, cx, cy + r);
+            cs.curveTo(cx - k, cy + r, cx - r, cy + k, cx - r, cy);
+            cs.curveTo(cx - r, cy - k, cx - k, cy - r, cx, cy - r);
+            cs.curveTo(cx + k, cy - r, cx + r, cy - k, cx + r, cy);
+            cs.closePath();
         }
 
         void cuadroAnulacion() throws IOException {
             String motivo = "Motivo: " + (hay(anulacion.motivo()) ? anulacion.motivo() : (hay(c.motivoAnulacion()) ? c.motivoAnulacion() : "no registrado"));
             String quien = anulacion.usuario() != null && anulacion.cuando() != null
                     ? "Anulado por " + anulacion.usuario() + " el " + FECHA_HORA.format(anulacion.cuando()) + " (hora de Colombia)."
-                    : "Anulacion registrada en el sistema. Este PDF se genero el " + FECHA_HORA.format(emision) + " (hora de Colombia).";
+                    : "Anulaci\u00f3n registrada en el sistema. Este PDF se gener\u00f3 el " + FECHA_HORA.format(emision) + " (hora de Colombia).";
             List<String> lineas = new ArrayList<>(envolver(limpiar(motivo), normal, 10, ANCHO - 24));
             lineas.add(limpiar(quien));
-            lineas.add("Este es el documento de anulacion. El comprobante original no fue modificado.");
+            lineas.add("Este es el documento de anulaci\u00f3n. El comprobante original no fue modificado.");
             float alto = 22 + lineas.size() * 14;
             relleno(new float[] {253 / 255f, 238 / 255f, 238 / 255f});
             cs.addRect(M, y - alto, ANCHO, alto);
@@ -166,116 +218,150 @@ public class GeneradorPdf {
                 yy -= 14;
                 texto(normal, 9.5f, M + 14, yy, l, new float[] {60 / 255f, 20 / 255f, 20 / 255f});
             }
-            y -= alto + 20;
+            y -= alto + 34;
         }
 
+        /** Tres columnas, como un recibo: a quien, que y los datos del documento. */
         void datosGenerales() throws IOException {
-            List<String[]> filas = new ArrayList<>();
-            filas.add(new String[] {"Fecha", FECHA.format(c.fecha())});
-            filas.add(new String[] {"Estado", c.estado().equals("ANULADO") ? "Anulado" : "Vigente"});
-            if (hay(c.tercero())) filas.add(new String[] {"CLIENTE".equals(c.terceroTipo()) ? "Cliente" : "Proveedor", c.tercero()});
-            if (hay(c.descripcion())) filas.add(new String[] {"Concepto", c.descripcion()});
-            if (hay(c.metodoPago())) filas.add(new String[] {"Metodo de pago", etiquetaMetodo(c.metodoPago())});
-            if (hay(c.referencia())) filas.add(new String[] {"Referencia", c.referencia()});
-            if (hay(c.usuarioRegistro())) filas.add(new String[] {"Registrado por", c.usuarioRegistro()});
-            float etiquetaX = M, valorX = M + 110;
-            for (String[] f : filas) {
-                List<String> partes = envolver(limpiar(f[1]), negrita, 10, ANCHO - 110);
-                espacio(14 * partes.size());
-                texto(normal, 9.5f, etiquetaX, y, f[0], GRIS_TEXTO);
-                for (String parte : partes) {
-                    texto(negrita, 10, valorX, y, parte, new float[] {0.1f, 0.1f, 0.1f});
-                    y -= 14;
+            float col = ANCHO / 3f;
+            float x1 = M, x2 = M + col, x3 = M + 2 * col + 6;
+            float tope = y;
+
+            texto(titular, 11, x1, tope, "CLIENTE".equals(c.terceroTipo()) ? "CLIENTE" : hay(c.tercero()) ? "PROVEEDOR" : "TERCERO", AZUL);
+            float y1 = tope - 16;
+            for (String parte : envolver(limpiar(hay(c.tercero()) ? c.tercero() : "No aplica"), normal, 9.5f, col - 14)) {
+                texto(normal, 9.5f, x1, y1, parte, NEGRO);
+                y1 -= 13;
+            }
+
+            texto(titular, 11, x2, tope, "DETALLE", AZUL);
+            float y2 = tope - 16;
+            List<String> detalle = new ArrayList<>();
+            if (hay(c.descripcion())) detalle.add(c.descripcion());
+            if (hay(c.metodoPago())) detalle.add("Pago: " + etiquetaMetodo(c.metodoPago()));
+            if (hay(c.usuarioRegistro())) detalle.add("Registrado por " + c.usuarioRegistro());
+            for (String dato : detalle) {
+                for (String parte : envolver(limpiar(dato), normal, 9.5f, col - 14)) {
+                    texto(normal, 9.5f, x2, y2, parte, NEGRO);
+                    y2 -= 13;
                 }
             }
-            y -= 10;
+
+            List<String[]> datos = new ArrayList<>();
+            datos.add(new String[] {"N.\u00ba COMPROBANTE", c.numero()});
+            datos.add(new String[] {"FECHA", FECHA.format(c.fecha())});
+            datos.add(new String[] {"ESTADO", "ANULADO".equals(c.estado()) ? "Anulado" : "Vigente"});
+            if (hay(c.referencia())) datos.add(new String[] {"REFERENCIA", c.referencia()});
+            float y3 = tope;
+            for (String[] f : datos) {
+                texto(titular, 10, x3, y3, limpiar(f[0]), AZUL);
+                derecha(normal, 9.5f, M + ANCHO, y3, limpiar(f[1]), NEGRO);
+                y3 -= 17;
+            }
+            y = Math.min(Math.min(y1, y2), y3) - 22;
         }
 
         void tabla() throws IOException {
             boolean conCantidad = d.lineas().stream().anyMatch(l -> l.cantidad() != null);
-            float xConcepto = M + 8;
-            float xCant = M + ANCHO - 230, xUnit = M + ANCHO - 150, xValor = M + ANCHO - 8;
-            cabeceraTabla(conCantidad, xConcepto, xCant, xUnit, xValor);
-            boolean zebra = false;
+            float xCant = M + 34, xConcepto = conCantidad ? M + 74 : M + 8;
+            float xUnit = M + ANCHO - 120, xValor = M + ANCHO - 8;
+            cabeceraTabla(conCantidad, xCant, xConcepto, xUnit, xValor);
             for (Linea l : d.lineas()) {
-                List<String> concepto = envolver(limpiar(l.concepto()), normal, 9.5f, (conCantidad ? xCant - 70 : xValor - 60) - xConcepto);
-                float alto = Math.max(1, concepto.size()) * 13 + 8;
+                float limite = (conCantidad ? xUnit - 80 : xValor - 90) - xConcepto;
+                List<String> concepto = envolver(limpiar(l.concepto()), normal, 10, limite);
+                float alto = Math.max(1, concepto.size()) * 13 + 11;
                 if (y - alto < PIE + 70) {
                     nuevaPagina(false);
-                    cabeceraTabla(conCantidad, xConcepto, xCant, xUnit, xValor);
-                    zebra = false;
+                    cabeceraTabla(conCantidad, xCant, xConcepto, xUnit, xValor);
                 }
-                if (zebra) {
-                    relleno(ZEBRA);
-                    cs.addRect(M, y - alto + 4, ANCHO, alto);
-                    cs.fill();
-                }
-                float yy = y - 8;
+                float yy = y - 12;
                 for (String parte : concepto) {
-                    texto(normal, 9.5f, xConcepto, yy, parte, new float[] {0.1f, 0.1f, 0.1f});
+                    texto(normal, 10, xConcepto, yy, parte, NEGRO);
                     yy -= 13;
                 }
-                float yLinea = y - 8;
+                float yLinea = y - 12;
                 if (conCantidad) {
-                    if (l.cantidad() != null) derecha(normal, 9.5f, xCant + 40, yLinea, cantidad(l.cantidad()), new float[] {0.1f, 0.1f, 0.1f});
-                    if (l.valorUnitario() != null) derecha(normal, 9.5f, xUnit + 60, yLinea, dinero(l.valorUnitario()), new float[] {0.1f, 0.1f, 0.1f});
+                    if (l.cantidad() != null) centro(normal, 10, xCant, yLinea, cantidad(l.cantidad()), NEGRO);
+                    if (l.valorUnitario() != null) derecha(normal, 10, xUnit, yLinea, dinero(l.valorUnitario()), NEGRO);
                 }
-                derecha(negrita, 9.5f, xValor, yLinea, dinero(l.valor()), new float[] {0.1f, 0.1f, 0.1f});
+                derecha(normal, 10, xValor, yLinea, dinero(l.valor()), NEGRO);
                 y -= alto;
-                zebra = !zebra;
             }
-            linea(M, y + 4, M + ANCHO, y + 4);
+            y -= 12;
+        }
+
+        void cabeceraTabla(boolean conCantidad, float xCant, float xConcepto, float xUnit, float xValor) throws IOException {
+            acento(y + 14);
+            float yy = y - 2;
+            if (conCantidad) centro(titular, 10.5f, xCant, yy, "CANT.", AZUL);
+            texto(titular, 10.5f, xConcepto, yy, limpiar("DESCRIPCI\u00d3N"), AZUL);
+            if (conCantidad) derecha(titular, 10.5f, xUnit, yy, "PRECIO UNITARIO", AZUL);
+            derecha(titular, 10.5f, xValor, yy, "IMPORTE", AZUL);
+            acento(y - 10);
             y -= 14;
         }
 
-        void cabeceraTabla(boolean conCantidad, float xConcepto, float xCant, float xUnit, float xValor) throws IOException {
-            relleno(anulacion != null ? ROJO : AZUL);
-            cs.addRect(M, y - 6, ANCHO, 22);
-            cs.fill();
-            float[] b = {1, 1, 1};
-            texto(negrita, 9, xConcepto, y, "DETALLE", b);
-            if (conCantidad) {
-                derecha(negrita, 9, xCant + 40, y, "CANTIDAD", b);
-                derecha(negrita, 9, xUnit + 60, y, "VALOR UNIT.", b);
-            }
-            derecha(negrita, 9, xValor, y, "VALOR", b);
-            y -= 22;
+        /** Linea delgada del color de acento a todo el ancho. */
+        void acento(float yy) throws IOException {
+            cs.setStrokingColor(ACENTO[0], ACENTO[1], ACENTO[2]);
+            cs.setLineWidth(1.1f);
+            cs.moveTo(M, yy);
+            cs.lineTo(M + ANCHO, yy);
+            cs.stroke();
         }
 
         void totales() throws IOException {
-            espacio(80);
-            float xEt = M + ANCHO - 230, xVal = M + ANCHO - 8;
+            espacio(86);
+            float xEt = M + ANCHO - 120, xVal = M + ANCHO - 8;
             if (d.subtotal() != null) {
-                texto(normal, 10, xEt, y, "Subtotal", GRIS_TEXTO);
-                derecha(normal, 10, xVal, y, dinero(d.subtotal()), new float[] {0.1f, 0.1f, 0.1f});
-                y -= 16;
+                derecha(normal, 10, xEt, y, "Subtotal", NEGRO);
+                derecha(normal, 10, xVal, y, dinero(d.subtotal()), NEGRO);
+                y -= 22;
             }
             if (d.iva() != null) {
-                texto(normal, 10, xEt, y, "IVA", GRIS_TEXTO);
-                derecha(normal, 10, xVal, y, dinero(d.iva()), new float[] {0.1f, 0.1f, 0.1f});
-                y -= 16;
+                derecha(normal, 10, xEt, y, "IVA", NEGRO);
+                derecha(normal, 10, xVal, y, dinero(d.iva()), NEGRO);
+                y -= 22;
             }
-            y -= 8;   // aire entre la ultima linea (IVA) y la caja del total
-            relleno(anulacion != null ? ROJO : AZUL);
-            cs.addRect(xEt - 10, y - 8, 230 + 10, 26);
-            cs.fill();
-            float[] b = {1, 1, 1};
-            texto(negrita, 11, xEt, y, anulacion != null ? "TOTAL (ANULADO)" : "TOTAL", b);
-            derecha(negrita, 12, xVal, y, dinero(c.monto()), b);
+            y -= 6;
+            derecha(titular, 15, xEt, y, anulacion != null ? "TOTAL (ANULADO)" : "TOTAL", principal());
+            derecha(titular, 15, xVal, y, dinero(c.monto()), principal());
             y -= 34;
         }
 
-        void pagos() throws IOException {
-            if (d.pagos().isEmpty()) return;
-            espacio(40 + 15 * d.pagos().size());
-            texto(negrita, 10, M, y, "Forma de pago", anulacion != null ? ROJO : AZUL);
-            y -= 16;
+        /** Pie del documento: «Gracias» y el recuadro de condiciones y forma de pago, pegados al final de la pagina. */
+        void cierre() throws IOException {
+            List<String> condiciones = new ArrayList<>();
             for (Pago p : d.pagos()) {
-                String linea = etiquetaMetodo(p.metodoPago()) + (hay(p.referencia()) ? "  -  ref. " + p.referencia() : "");
-                texto(normal, 9.5f, M, y, limpiar(linea), new float[] {0.1f, 0.1f, 0.1f});
-                derecha(normal, 9.5f, M + 230, y, dinero(p.monto()), new float[] {0.1f, 0.1f, 0.1f});
-                y -= 14;
+                condiciones.add(etiquetaMetodo(p.metodoPago()) + ": " + dinero(p.monto()) + (hay(p.referencia()) ? "  (ref. " + p.referencia() + ")" : ""));
             }
+            if (condiciones.isEmpty() && hay(c.metodoPago())) condiciones.add("Pago en " + etiquetaMetodo(c.metodoPago()).toLowerCase(Locale.ROOT));
+            if (condiciones.isEmpty() && hay(c.descripcion()) && c.descripcion().toLowerCase(Locale.ROOT).contains("credito")) {
+                condiciones.add("Venta a cr\u00e9dito: se paga seg\u00fan el plazo acordado.");
+            }
+            float xCaja = M + ANCHO * 0.52f, anchoCaja = M + ANCHO - xCaja - 10;
+            List<String> lineas = new ArrayList<>();
+            for (String linea : condiciones) lineas.addAll(envolver(limpiar(linea), normal, 9.5f, anchoCaja));
+            float alto = 34 + Math.max(1, lineas.size()) * 13 + 20;
+            float base = PIE + 14;
+            if (y - (alto + 20) < base) {
+                nuevaPagina(false);
+            }
+            float tope = base + alto;
+            cs.setStrokingColor(AZUL[0], AZUL[1], AZUL[2]);
+            cs.setLineWidth(1f);
+            cs.moveTo(xCaja - 8, base);
+            cs.lineTo(xCaja - 8, tope);
+            cs.stroke();
+            texto(titular, 11, xCaja, tope - 12, "CONDICIONES Y FORMA DE PAGO", ACENTO);
+            float yy = tope - 32;
+            if (lineas.isEmpty()) lineas.add("Sin pagos registrados en este documento.");
+            for (String l : lineas) {
+                texto(normal, 9.5f, xCaja, yy, l, NEGRO);
+                yy -= 13;
+            }
+            texto(normal, 8, xCaja, base + 4, "Documento interno. No es factura electr\u00f3nica.", GRIS_TEXTO);
+            if (anulacion == null) derecha(cursiva, 40, xCaja - 22, base + 8, "Gracias", AZUL);
         }
 
         /** Si no cabe lo que sigue, pasa a una pagina nueva. */
@@ -293,7 +379,7 @@ public class GeneradorPdf {
                     linea(M, PIE - 8, M + ANCHO, PIE - 8);
                     texto(normal, 8, M, PIE - 22, limpiar("Comprobante interno generado por SILA  -  " + c.numero()
                             + "  -  " + FECHA_HORA.format(emision) + " (hora de Colombia)"), GRIS_TEXTO);
-                    derecha(normal, 8, M + ANCHO, PIE - 22, "Pagina " + (i + 1) + " de " + total, GRIS_TEXTO);
+                    derecha(normal, 8, M + ANCHO, PIE - 22, "P\u00e1gina " + (i + 1) + " de " + total, GRIS_TEXTO);
                     if (anulacion != null) marcaDeAgua();
                 }
             }
@@ -335,6 +421,21 @@ public class GeneradorPdf {
 
         // ---- primitivas
 
+        /** Palabra grande del encabezado; en la version de anulacion lleva «ANULADA/O». */
+        String tituloCorto() {
+            String palabra = switch (c.tipo()) {
+                case "VENTA" -> "VENTA";
+                case "ABONO" -> "RECIBO";
+                case "PAGO_PROVEEDOR" -> "PAGO";
+                case "COMPRA" -> "COMPRA";
+                case "GASTO" -> "GASTO";
+                default -> "COMPROBANTE";
+            };
+            if (anulacion == null) return palabra;
+            boolean femenino = palabra.equals("VENTA") || palabra.equals("COMPRA");
+            return palabra + (femenino ? " ANULADA" : " ANULADO");
+        }
+
         String titulo() {
             return switch (c.tipo()) {
                 case "VENTA" -> "Comprobante de venta";
@@ -363,6 +464,11 @@ public class GeneradorPdf {
             cs.newLineAtOffset(x, yy);
             cs.showText(limpiar(s));
             cs.endText();
+        }
+
+        void centro(PDFont f, float tam, float xCentro, float yy, String s, float[] rgb) throws IOException {
+            String t = limpiar(s);
+            texto(f, tam, xCentro - ancho(f, tam, t) / 2, yy, t, rgb);
         }
 
         void derecha(PDFont f, float tam, float xDerecha, float yy, String s, float[] rgb) throws IOException {
@@ -430,6 +536,20 @@ public class GeneradorPdf {
     }
 
     private static boolean hay(String s) { return s != null && !s.isBlank(); }
+
+    /** «Lacteos del Llano SAS» -> «LL»: primeras letras de hasta dos palabras significativas. */
+    static String iniciales(String nombre) {
+        StringBuilder b = new StringBuilder();
+        for (String p : limpiar(nombre).trim().split("\\s+")) {
+            if (p.isEmpty() || p.length() <= 2 || p.equalsIgnoreCase("SAS") || p.equalsIgnoreCase("LTDA") || p.equalsIgnoreCase("S.A.S.")) continue;
+            b.append(Character.toUpperCase(p.charAt(0)));
+            if (b.length() == 2) break;
+        }
+        String limpio = limpiar(nombre).trim();
+        if (b.length() == 1 && limpio.length() > 1) b.append(Character.toUpperCase(limpio.charAt(1)));   // una sola palabra: dos letras
+        if (b.length() == 0 && !limpio.isEmpty()) b.append(Character.toUpperCase(limpio.charAt(0)));
+        return b.toString();
+    }
 
     private static String etiquetaMetodo(String m) {
         if (m == null) return "";

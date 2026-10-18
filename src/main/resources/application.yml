@@ -104,6 +104,8 @@ sila:
       nit: ${SILA_EMPRESA_NIT:}
       direccion: ${SILA_EMPRESA_DIRECCION:}
       telefono: ${SILA_EMPRESA_TELEFONO:}
+      # Logo del encabezado de los PDF: ruta a un PNG o JPG (max. 2 MB). Vacio = circulo con las iniciales.
+      logo: ${SILA_EMPRESA_LOGO:}
     clamav:
       # Antivirus ClamAV (clamd). Habilitado = la subida se rechaza si clamd no responde. Apagarlo SOLO en desarrollo.
       habilitado: ${SILA_CLAMAV:true}
